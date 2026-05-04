@@ -58,6 +58,7 @@ class TodoManager(Tool):
         chat_id = self._chat_id()
         data = _load(chat_id)
 
+        # ── create ─────────────────────────────────────────────────────────────
         if action == "create":
             if data["tasks"]:
                 return Response(
@@ -77,6 +78,7 @@ class TodoManager(Tool):
             _save(data)
             return Response(message=f"Created {len(data['tasks'])} tasks.\n\n{_format_list(data)}", break_loop=False)
 
+        # ── add ────────────────────────────────────────────────────────────────
         elif action == "add":
             title = (self.args.get("title") or "").strip()
             if not title:
@@ -91,25 +93,118 @@ class TodoManager(Tool):
             _save(data)
             return Response(message=f"Added task [{new_id}]: {title}", break_loop=False)
 
+        # ── start ──────────────────────────────────────────────────────────────
         elif action == "start":
             return self._transition(data, self._get_id(), "started")
 
+        # ── complete ───────────────────────────────────────────────────────────
         elif action == "complete":
             return self._transition(data, self._get_id(), "completed")
 
+        # ── batch_complete ─────────────────────────────────────────────────────
+        # Use this when you finished multiple tasks in one action.
+        # Provide task_ids=[1,2,3] — ALL must be in 'started' state.
+        # Returns a per-task verification report so you can see exactly what
+        # succeeded, what was already completed, and what still needs starting.
+        elif action == "batch_complete":
+            raw_ids = self.args.get("task_ids", [])
+            if not isinstance(raw_ids, list) or not raw_ids:
+                return Response(
+                    message="Provide 'task_ids' as a non-empty list of integer IDs.",
+                    break_loop=False,
+                )
+
+            successes, skipped, errors = [], [], []
+
+            for tid in raw_ids:
+                try:
+                    tid = int(tid)
+                except (TypeError, ValueError):
+                    errors.append(f"  ✗ '{tid}' — not a valid integer ID")
+                    continue
+
+                task = next((t for t in data["tasks"] if t["id"] == tid), None)
+                if task is None:
+                    errors.append(f"  ✗ [{tid}] — task not found")
+                    continue
+
+                current = task["status"]
+                if current == "completed":
+                    skipped.append(f"  ⚠ [{tid}] '{task['title']}' — already completed (skipped)")
+                    continue
+                if current != "started":
+                    errors.append(
+                        f"  ✗ [{tid}] '{task['title']}' — cannot complete from '{current}' "
+                        f"(must be 'started' first). Call action=start for this task."
+                    )
+                    continue
+
+                # Valid transition: started → completed
+                task["status"] = "completed"
+                task["updated_at"] = _now()
+                task["blocked_reason"] = None
+                successes.append(f"  ✅ [{tid}] '{task['title']}' → completed")
+
+            _save(data)
+
+            remaining = sum(1 for t in data["tasks"] if t["status"] in ("queued", "started", "blocked"))
+            nxt = next((t for t in data["tasks"] if t["status"] == "queued"), None)
+            next_hint = f"▶ Next queued: [{nxt['id']}] {nxt['title']}" if nxt else "🎉 All tasks complete!"
+
+            report_lines = [f"batch_complete report ({len(successes)} completed, {len(skipped)} skipped, {len(errors)} errors):"]
+            report_lines += successes + skipped + errors
+            report_lines += ["", f"{remaining} task(s) remaining. {next_hint}"]
+
+            # If there were errors (tasks not yet started), block response until fixed
+            if errors:
+                report_lines += [
+                    "",
+                    "⚠️ Some tasks could not be completed — they were NOT in 'started' state.",
+                    "You MUST call action=start for each failed task before completing it.",
+                    "Do NOT call response until all intended tasks are properly marked completed.",
+                ]
+
+            return Response(message="\n".join(report_lines), break_loop=False)
+
+        # ── block ──────────────────────────────────────────────────────────────
         elif action == "block":
             reason = (self.args.get("reason") or "No reason provided.").strip()
             return self._transition(data, self._get_id(), "blocked", reason)
 
+        # ── unblock ────────────────────────────────────────────────────────────
         elif action == "unblock":
             return self._transition(data, self._get_id(), "started")
 
+        # ── list ───────────────────────────────────────────────────────────────
         elif action == "list":
             return Response(message=_format_list(data), break_loop=False)
 
+        # ── check_done ─────────────────────────────────────────────────────────
+        # Explicit pre-response gate: call this before giving a final response.
+        # Returns a hard BLOCK message if any tasks are incomplete.
+        elif action == "check_done":
+            incomplete = [t for t in data["tasks"] if t["status"] != "completed"]
+            if not incomplete:
+                return Response(
+                    message="✅ All tasks are completed. You may now give the final response.",
+                    break_loop=False,
+                )
+            icons = {"queued": "⏳", "started": "🔄", "blocked": "🚫"}
+            lines = [
+                f"🚫 BLOCKED — {len(incomplete)} task(s) are not yet completed.",
+                "You MUST finish and mark ALL tasks before responding to the user.",
+                "",
+                "Incomplete tasks:",
+            ]
+            for t in incomplete:
+                icon = icons.get(t["status"], "❓")
+                lines.append(f"  {icon} [{t['id']}] {t['title']} ({t['status']})")
+            lines += ["", "Complete remaining tasks, then call check_done again before responding."]
+            return Response(message="\n".join(lines), break_loop=False)
+
         else:
             return Response(
-                message="Valid actions: create, add, start, complete, block, unblock, list.",
+                message="Valid actions: create, add, start, complete, batch_complete, block, unblock, list, check_done.",
                 break_loop=False,
             )
 
@@ -134,7 +229,6 @@ class TodoManager(Tool):
         current = task["status"]
         allowed = VALID_TRANSITIONS.get(current, [])
 
-        # Anti-loop: reject no-op and invalid transitions with a clear message
         if current == new_status:
             return Response(message=f"Task [{task_id}] is already '{current}'. No change made.", break_loop=False)
         if new_status not in allowed:

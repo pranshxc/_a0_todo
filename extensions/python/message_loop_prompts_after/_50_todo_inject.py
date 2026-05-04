@@ -17,7 +17,7 @@ def _render(data: dict) -> str:
     tasks = data.get("tasks", [])
     if not tasks:
         return ""
-    done  = sum(1 for t in tasks if t["status"] == "completed")
+    done = sum(1 for t in tasks if t["status"] == "completed")
     active = next((t for t in tasks if t["status"] == "started"), None)
     lines = [
         "<todo_list>",
@@ -34,8 +34,8 @@ def _render(data: dict) -> str:
 
 
 class TodoInject(Extension):
-    """After prompts are assembled: inject the current todo list into extras_persistent
-    so it appears in the system prompt alongside memory on every loop iteration."""
+    """After prompts are assembled: inject the current todo list + strict rules
+    into extras_persistent so the agent sees them on every loop iteration."""
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         agent = self.agent
@@ -62,9 +62,35 @@ class TodoInject(Extension):
         if not rendered:
             return
 
+        tasks = data.get("tasks", [])
+        incomplete = [t for t in tasks if t["status"] != "completed"]
+        all_done = len(incomplete) == 0 and len(tasks) > 0
+
+        # Build strict rules based on current state
+        if all_done:
+            rules = (
+                "All tasks are marked ✅ completed. "
+                "You may now call `todo_manager(action=check_done)` to confirm, then give the final response."
+            )
+        else:
+            incomplete_ids = ", ".join(f"[{t['id']}]" for t in incomplete[:10])
+            overflow = f" + {len(incomplete)-10} more" if len(incomplete) > 10 else ""
+            rules = (
+                f"⛔ {len(incomplete)} task(s) still incomplete: {incomplete_ids}{overflow}.\n"
+                "STRICT RULES — you MUST follow these or your response will be rejected:\n"
+                "1. Work tasks IN ORDER. Do NOT skip tasks or respond early.\n"
+                "2. Before starting ANY task: call `todo_manager(action=start, task_id=N)`.\n"
+                "3. After finishing ANY task: call `todo_manager(action=complete, task_id=N)` immediately.\n"
+                "   If you finished MULTIPLE tasks in one action: call `todo_manager(action=batch_complete, task_ids=[N,M,...])`.\n"
+                "   batch_complete verifies each task was in 'started' state — check the report for any failures.\n"
+                "4. NEVER call `response` while any task is ⏳ queued, 🔄 started, or 🚫 blocked.\n"
+                "5. Before giving your final response: call `todo_manager(action=check_done)` first.\n"
+                "   If check_done returns incomplete tasks, finish them before responding.\n"
+                "6. Do NOT mark a task completed without having actually done the work."
+            )
+
         loop_data.extras_persistent["todo_list"] = (
             "## 📋 Your Work Order (Todo List)\n"
-            "Work tasks in order. Mark each task with `todo_manager` before and after working on it. "
-            "Never re-mark a completed task. If blocked, use action=block with a reason.\n\n"
+            + rules + "\n\n"
             + rendered
         )

@@ -2,5 +2,6 @@ name: _a0_todo
 title: Agent Todo
 description: Per-chat structured todo list (10-50 tasks). Agent follows it as a work order, marking tasks queued/started/completed/blocked. Injected alongside memory into every prompt.
 version: 1.0.0
+always_enabled: true
 per_project_config: false
 per_agent_config: false

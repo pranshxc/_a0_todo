@@ -1,0 +1,10 @@
+name: agent_todo
+version: 1.0.0
+description: Per-chat structured todo list with 10-50 tasks. Agent follows the list as a work order, marking tasks queued/started/completed/blocked. Injected alongside memory into every prompt.
+author: pranshxc
+tags:
+  - productivity
+  - memory
+  - task-management
+  - workflow
+min_agent_zero_version: "0.9.7"

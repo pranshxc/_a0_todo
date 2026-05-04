@@ -8,7 +8,11 @@ TODO_DIR = os.path.join("work", "todo")
 
 class TodoBootstrap(Extension):
     """At the start of each monologue: if no todo exists for this chat, inject a
-    bootstrap instruction into extras_persistent so the agent creates one first."""
+    bootstrap instruction into extras_persistent so the agent creates one first.
+
+    Respects _a0_planner: if the planner is blocking (plan not yet approved),
+    suppress this bootstrap entirely so the agent doesn't skip the planning step.
+    """
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         agent = self.agent
@@ -28,6 +32,13 @@ class TodoBootstrap(Extension):
         already_bootstrapped = agent.get_data("_todo_bootstrapped") or False
         if os.path.exists(todo_path) or already_bootstrapped:
             return
+
+        # ── Planner gate ────────────────────────────────────────────────────────
+        # If _a0_planner is active and blocking (plan not yet approved),
+        # do NOT inject the todo bootstrap — the planner intercept takes priority.
+        if loop_data.extras_persistent.get("_planner_blocking") == "true":
+            return
+        # ────────────────────────────────────────────────────────────────────────
 
         agent.set_data("_todo_bootstrapped", True)
 

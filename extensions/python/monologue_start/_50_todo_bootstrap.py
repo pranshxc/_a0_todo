@@ -1,3 +1,15 @@
+"""
+monologue_start -> _50_todo_bootstrap
+
+At the start of each user turn:
+ - If no todo list exists: inject a one-time instruction for the agent to create one.
+ - If a list exists: inject a COMPACT status summary (not full rules) so the agent
+   has context without being overwhelmed with strict rules on every loop iteration.
+
+The full rules + live list are shown only in extras_persistent by the inject extension,
+but ONLY when there are actually incomplete tasks. When everything is done, the extras
+are suppressed so the agent can give a clean final response.
+"""
 import os
 import json
 from helpers.extension import Extension
@@ -7,12 +19,6 @@ TODO_DIR = os.path.join("work", "todo")
 
 
 class TodoBootstrap(Extension):
-    """At the start of each monologue: if no todo exists for this chat, inject a
-    bootstrap instruction into extras_persistent so the agent creates one first.
-
-    Respects _a0_planner: if the planner is blocking (plan not yet approved),
-    suppress this bootstrap entirely so the agent doesn't skip the planning step.
-    """
 
     async def execute(self, loop_data: LoopData = LoopData(), **kwargs):
         agent = self.agent
@@ -28,25 +34,38 @@ class TodoBootstrap(Extension):
         os.makedirs(TODO_DIR, exist_ok=True)
         todo_path = os.path.join(TODO_DIR, f"{chat_id}.json")
 
-        # Only inject bootstrap when no list exists yet AND not already done this session
-        already_bootstrapped = agent.get_data("_todo_bootstrapped") or False
-        if os.path.exists(todo_path) or already_bootstrapped:
-            return
-
-        # ── Planner gate ────────────────────────────────────────────────────────
-        # If _a0_planner is active and blocking (plan not yet approved),
-        # do NOT inject the todo bootstrap — the planner intercept takes priority.
+        # Planner gate: if planner hasn't approved yet, let planner go first
         if loop_data.extras_persistent.get("_planner_blocking") == "true":
             return
-        # ────────────────────────────────────────────────────────────────────────
+
+        if os.path.exists(todo_path):
+            # List exists — check if all done so we can suppress rules
+            try:
+                with open(todo_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                tasks = data.get("tasks", [])
+                done = sum(1 for t in tasks if t["status"] == "completed")
+                total = len(tasks)
+                if total > 0 and done < total:
+                    # Incomplete — just note progress, the inject extension handles rules
+                    loop_data.extras_persistent["_todo_progress"] = (
+                        f"[Auto-tracker active: {done}/{total} tasks done. "
+                        "Progress updates are handled automatically.]"
+                    )
+            except Exception:
+                pass
+            return
+
+        # No list yet — bootstrap instruction (fires ONCE)
+        already_bootstrapped = agent.get_data("_todo_bootstrapped") or False
+        if already_bootstrapped:
+            return
 
         agent.set_data("_todo_bootstrapped", True)
-
         loop_data.extras_persistent["todo_bootstrap"] = (
-            "## ⚡ Todo List Required\n"
-            "No todo list exists for this chat yet. "
-            "Your VERY FIRST action MUST be calling `todo_manager` with `action=create` "
-            "and a `tasks` array of 10–50 concise task titles that represent the full "
-            "work plan for this conversation. "
-            "Do NOT respond to the user before creating the todo list."
+            "## ⚡ First Step: Create Your Work Plan\n"
+            "Call `todo_manager(action=create, tasks=[...])` with 5–30 concise task titles "
+            "covering the full work plan. After that, automatic tracking handles all "
+            "start/complete updates — you NEVER need to call todo_manager for status updates. "
+            "Just do the work."
         )

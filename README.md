@@ -1,74 +1,69 @@
-# _a0_todo — Agent Todo Plugin
+# a0-plugin-todo
 
-A production-grade Agent Zero plugin that gives every chat its own persistent, structured **Todo List** — a 10–50 task work order the agent follows, marks, and stays aware of at all times.
+Per-chat work-order task tracker for [Agent Zero](https://github.com/agent0ai/agent-zero), with **automatic utility-model tracking** in v3.
+
+## The Problem (Before v3)
+
+Every `start`, `complete`, and `check_done` call was done by the **main chat model** — meaning 70k+ input tokens were billed just to update a task status JSON file. A 49-task session like a DNS recon would make 100+ such calls, each consuming the full context.
+
+## How v3 Works
+
+```
+Main model:  create todo list once at start
+             block/unblock if a task is blocked
+             give final response when done
+             ← that's it
+
+Utility model (tiny, cheap):  
+  [message_loop_end]   after every agent response/tool call:
+                       reads last 2000 chars of response
+                       reads active tasks list
+                       infers what started/completed
+                       updates JSON silently
+                       logs to sidebar only
+
+  [monologue_end]      after the full turn:
+                       reads current topic messages
+                       catches any missed transitions
+                       logs final stats
+```
+
+## Token Cost Comparison
+
+| Operation | v2 (manual) | v3 (automatic) |
+|---|---|---|
+| Mark task started | 70k+ main tokens | ~300 utility tokens |
+| Mark task completed | 70k+ main tokens | ~300 utility tokens |
+| 49-task session (100 updates) | ~7M input tokens | ~30k utility tokens |
+| Main model role | Do work + manage todo | Do work only |
+
+## File Structure
+
+```
+extensions/python/
+  monologue_start/_50_todo_bootstrap.py    # create list instruction (once)
+  message_loop_prompts_after/_50_todo_inject.py  # compact status in context
+  message_loop_end/_55_todo_auto_tracker.py      # utility model tracker (per call)
+  monologue_end/_55_todo_final_check.py          # utility model final pass
+
+tools/
+  todo_manager.py   # manual escape hatch (create, add, block, unblock, list)
+```
 
 ## Installation
 
-Copy this folder as `_a0_todo` into your Agent Zero `plugins/` directory and restart:
-
 ```bash
-cp -r _a0_todo/ /path/to/agent-zero/plugins/_a0_todo/
+cd /a0/agent-zero/plugins
+git clone https://github.com/pranshxc/a0-plugin-todo
 docker restart agent-zero
 ```
 
-The plugin auto-discovers — no manual registration needed.
+## What the Agent Sees
 
-## Correct Plugin Structure
+The agent only needs to:
+1. Call `todo_manager(action=create, tasks=[...])` once at the start
+2. Do the actual work
+3. Call `todo_manager(action=block/unblock)` only if stuck
+4. Give the final response when done
 
-```
-plugins/_a0_todo/
-├── plugin.yaml                                          # plugin metadata (name must match folder)
-├── README.md
-├── tools/
-│   └── todo_manager.py                                  # tool the agent calls
-├── extensions/
-│   └── python/
-│       ├── monologue_start/
-│       │   └── _50_todo_bootstrap.py                    # bootstrap on new chat
-│       └── message_loop_prompts_after/
-│           └── _50_todo_inject.py                       # inject todo into every prompt
-└── prompts/
-    └── agent.system.tool.todo_manager.md                # LLM tool description
-```
-
-## How It Works
-
-### 1. Bootstrap (`monologue_start`)
-When a new chat starts and no `work/todo/{chat_id}.json` exists, injects a hard system instruction via `extras_persistent` telling the agent its first action must be calling `todo_manager` with `action=create`.
-
-### 2. Inject (`message_loop_prompts_after`)
-On every loop iteration, reads the chat's JSON and injects a compact `<todo_list>` block into `extras_persistent` — the same mechanism memory uses — so the LLM always sees the full work order alongside memory.
-
-### 3. Tool (`todo_manager`)
-Single tool with 7 actions: `create`, `add`, `start`, `complete`, `block`, `unblock`, `list`.
-
-Strict state machine prevents loops:
-```
-queued → started → completed  (terminal)
-                ↘ blocked → started
-```
-Re-marking or invalid transitions return an error immediately — the agent cannot loop.
-
-## Task JSON Schema
-
-```json
-{
-  "chat_id": "abc123",
-  "created_at": "2026-05-04T10:00:00+00:00",
-  "tasks": [
-    {
-      "id": 1,
-      "title": "Research the topic",
-      "status": "completed",
-      "created_at": "2026-05-04T10:00:00+00:00",
-      "updated_at": "2026-05-04T10:05:00+00:00",
-      "blocked_reason": null
-    }
-  ]
-}
-```
-
-Todo files are stored at `work/todo/{chat_id}.json` inside the Agent Zero working directory.
-
-## License
-MIT
+Everything else is automatic.

@@ -1,11 +1,16 @@
 """
 extensions/python/message_loop_prompts_after/_50_todo_inject.py
 
-This is the ACTIVE inject file loaded by Agent Zero.
-Injects compact todo status + NEXT 3 UPCOMING tasks into every prompt.
+Active inject file loaded by Agent Zero.
+Minimal format: completed count + upcoming-3 titles only.
+No queued/blocked/started ID lists — those bloat tokens without adding signal.
 
-Fix: replaced old single-next-task format with upcoming_3 block so agent
-always sees next 3 queued tasks without calling todo_manager to peek.
+Output format:
+  ## Work Order (37 remaining)
+  <todo 1/38 done (2%)>
+    ✅ completed : [1]
+  </todo>
+  upcoming (next 3): [2] Title | [3] Title | [4] Title
 """
 import os
 import json
@@ -13,12 +18,10 @@ from helpers.extension import Extension
 from agent import LoopData
 
 TODO_DIR = os.path.join("work", "todo")
-ICONS = {"queued": "⏳", "started": "🔄", "completed": "✅", "blocked": "🚫"}
 
-# Compaction hint thresholds — keep in sync with _a0_context_guard
 _TARGET  = int(os.environ.get("CTX_GUARD_TARGET_TOKENS", "40000"))
 _BUFFER  = int(os.environ.get("CTX_GUARD_BUFFER_TOKENS", "10000"))
-_TRIGGER = _TARGET + _BUFFER   # 50000
+_TRIGGER = _TARGET + _BUFFER
 _WARN_70 = int(_TRIGGER * 0.70)
 _WARN_90 = int(_TRIGGER * 0.90)
 
@@ -88,29 +91,19 @@ class TodoInject(Extension):
             )
             return
 
-        # Compact grouped view — IDs only, no full titles (saves tokens)
-        groups: dict[str, list] = {"completed": [], "started": [], "queued": [], "blocked": []}
-        for t in tasks:
-            groups.get(t["status"], groups["queued"]).append(t["id"])
+        completed_ids = [t["id"] for t in tasks if t["status"] == "completed"]
+        blocked_ids   = [t["id"] for t in tasks if t["status"] == "blocked"]
+        pct = f"{100 * done // total}%"
 
-        pct   = f"{100 * done // total}%"
         lines = [f"<todo {done}/{total} done ({pct})>"]
-        if groups["completed"]:
-            lines.append(f"  ✅ completed : {groups['completed']}")
-        if groups["started"]:
-            lines.append(f"  🔄 in_progress: {groups['started']}")
-        if groups["blocked"]:
-            lines.append(f"  🚫 blocked    : {groups['blocked']}")
-        if groups["queued"]:
-            lines.append(f"  ⏳ queued     : {groups['queued']}")
+        if completed_ids:
+            lines.append(f"  ✅ completed : {completed_ids}")
         lines.append("</todo>")
 
-        # Upcoming 3 — the critical fix
         upcoming = _upcoming_3(tasks)
         if upcoming:
             lines.append(upcoming)
 
-        blocked_ids = groups["blocked"]
         note = ""
         if blocked_ids:
             note = f"\n⚠️ Tasks {blocked_ids} blocked. Use todo_manager(action=unblock) if resolved."
@@ -121,7 +114,6 @@ class TodoInject(Extension):
             + "\n".join(lines)
         )
 
-        # Compaction hint
         hint = _compaction_hint(_get_tokens(agent))
         if hint:
             body += f"\n\n{hint}"
